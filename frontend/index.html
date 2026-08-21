@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SimpleCover — Health insurance that makes sense</title>
+  <!-- Datadog Browser RUM (CDN async, US1). Must sit in <head> before app.js. -->
+  <script>
+    (function (h, o, u, n, d) {
+      h = h[d] = h[d] || { q: [], onReady: function (c) { h.q.push(c); } };
+      d = o.createElement(u); d.async = 1; d.src = n; d.crossOrigin = "anonymous";
+      n = o.getElementsByTagName(u)[0]; n.parentNode.insertBefore(d, n);
+    })(window, document, "script", "https://www.datadoghq-browser-agent.com/us1/v7/datadog-rum.js", "DD_RUM");
+    window.DD_RUM.onReady(function () {
+      window.DD_RUM.init({
+        applicationId: "982ab0ef-608a-405d-89be-3d3033d68e3f",
+        clientToken: "pub6f8a1340522470ddd064a690663e1996",
+        site: "datadoghq.com",
+        service: "ctm_browser",
+        env: "dev",
+        version: "1.0",
+        sessionSampleRate: 100,
+        sessionReplaySampleRate: 100,
+        traceSampleRate: 100,
+        traceContextInjection: "all",
+        trackUserInteractions: true,
+        trackResources: true,
+        trackLongTasks: true,
+        defaultPrivacyLevel: "mask-user-input",
+        allowedTracingUrls: [
+          "http://localhost:8000",
+          "http://127.0.0.1:8000",
+          {
+            match: function (url) { return /^https?:\/\/(localhost|127\.0\.0\.1):8000(?:\/|$)/.test(url); },
+            propagatorTypes: ["datadog", "tracecontext"]
+          }
+        ],
+      });
+    });
+  </script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ── Top nav ─────────────────────────────────────────────── -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top">
+        <span class="brand-mark">◎</span>
+        <span class="brand-name">Simple<b>Cover</b></span>
+      </a>
+      <nav class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#hero">Health</a>
+        <a href="#">Life</a>
+        <a href="#">Help</a>
+        <a class="nav-login" href="#">Member login</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ── Hero ────────────────────────────────────────────────── -->
+  <section class="hero" id="hero">
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <p class="eyebrow">Private health insurance</p>
+        <h1>Health cover that actually makes sense.</h1>
+        <p class="sub">Chat with our assistant, compare policies in plain English,
+          and get an indicative quote in minutes — no call-centre hold music.</p>
+        <button class="btn btn-accent btn-lg" id="cta-chat">Chat now →</button>
+        <p class="hero-note">Demo only · fictional brand · illustrative prices</p>
+      </div>
+      <div class="hero-card">
+        <div class="hero-card-row"><span>Basic Hospital</span><b>$95/mo</b></div>
+        <div class="hero-card-row"><span>Bronze Secure</span><b>$120/mo</b></div>
+        <div class="hero-card-row hl"><span>Silver Active + Extras</span><b>$185/mo</b></div>
+        <div class="hero-card-row"><span>Gold Complete</span><b>$310/mo</b></div>
+        <p class="hero-card-foot">Indicative monthly premiums · singles</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── How it works ────────────────────────────────────────── -->
+  <section class="how" id="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Tell us what you need</h3>
+        <p>Describe your situation in your own words — budget, state, and what
+           matters to you.</p>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>We compare policies</h3>
+        <p>Our assistant looks up cover details and ranks options, explaining the
+           trade-offs.</p>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Get your quote</h3>
+        <p>See indicative premiums and next steps — or have a human call you back.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Chat panel ──────────────────────────────────────────── -->
+  <section class="chat-section" id="chat">
+    <div class="chat-card">
+      <div class="chat-head">
+        <div>
+          <h2>Talk to SimpleCover Assistant</h2>
+          <p class="chat-sub">Ask about cover, paste a policy to review, or ask for a human.</p>
+        </div>
+        <div class="session-box">
+          <label>Customer ID <small>(edit to simulate a returning customer)</small></label>
+          <div class="session-row">
+            <input id="customer-id" type="text" spellcheck="false" />
+            <button class="btn btn-ghost" id="new-session" title="Start a new conversation for this customer">New session</button>
+          </div>
+          <span class="session-id" id="session-id"></span>
+        </div>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Type a message… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <div class="composer-actions">
+          <button class="btn btn-ghost" id="doc-toggle" title="Paste text to simulate an uploaded document">📄 Paste document</button>
+          <button class="btn btn-accent" id="send">Send</button>
+        </div>
+      </div>
+
+      <div class="doc-drawer" id="doc-drawer" hidden>
+        <label>Simulated uploaded document (paste a PHIS, policy text, or anything to test rejection)</label>
+        <textarea id="doc-input" rows="6" placeholder="Paste document text here…"></textarea>
+        <div class="doc-actions">
+          <button class="btn btn-ghost" id="doc-cancel">Cancel</button>
+          <button class="btn btn-primary" id="doc-send">Send as document</button>
+        </div>
+      </div>
+    </div>
+    <p class="tip">Tip: demo scripts live in <code>bedrock-health-agent/scenarios.md</code>.</p>
+  </section>
+
+  <footer class="foot">
+    <p>SimpleCover is a fictional brand built for a demo. Not affiliated with any
+       real insurer or comparison service. All prices and products are illustrative.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

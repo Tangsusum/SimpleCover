@@ -1,0 +1,78 @@
+{
+  "functions": [
+    {
+      "name": "get_quotes",
+      "description": "Return a small ranked list of mock health-insurance policy quotes matching the customer's stated needs. Each result includes fund, product, tier, cover type, monthly premium, key inclusions and a one-line trade-off note. ALWAYS call this before presenting any policy options, premiums or coverage. The 'needs' of the customer are supplied as the flattened parameters below.",
+      "parameters": {
+        "state": {
+          "type": "string",
+          "description": "Australian state/territory the customer lives in, e.g. NSW, VIC, QLD, WA, SA, ACT, TAS. Leave blank if unknown.",
+          "required": false
+        },
+        "cover_type": {
+          "type": "string",
+          "description": "What the customer wants: 'hospital', 'extras', or 'both'.",
+          "required": false
+        },
+        "priorities": {
+          "type": "string",
+          "description": "Free-text summary of what matters to the customer, e.g. 'cheapest entry-level cover to avoid MLS', 'good dental and physio extras', 'joint reconstruction cover', 'switching, want similar Silver cover cheaper'.",
+          "required": false
+        },
+        "budget_max": {
+          "type": "number",
+          "description": "Rough maximum monthly premium in AUD the customer is willing to pay. 0 or omitted means no stated budget.",
+          "required": false
+        }
+      }
+    },
+    {
+      "name": "estimate_rebate_and_lhc",
+      "description": "Return a MOCK, illustrative estimate of the private health insurance rebate percentage and any Lifetime Health Cover (LHC) loading for a customer. Not actuarially accurate. Clearly label results as an estimate when presenting them.",
+      "parameters": {
+        "age": {
+          "type": "integer",
+          "description": "Customer age in years.",
+          "required": true
+        },
+        "income": {
+          "type": "number",
+          "description": "Customer annual taxable income in AUD.",
+          "required": true
+        },
+        "dependents": {
+          "type": "integer",
+          "description": "Number of dependents. 0 if none.",
+          "required": false
+        }
+      }
+    },
+    {
+      "name": "schedule_callback",
+      "description": "Book a MOCK human call-centre callback. Call this when the customer asks for a human, sounds frustrated/complaining, or has a complex/out-of-scope need. Returns a confirmation id and time.",
+      "parameters": {
+        "reason": {
+          "type": "string",
+          "description": "Short reason for the callback, e.g. 'customer requested a human', 'customer frustrated about waiting periods', 'complex psychiatric cover need'.",
+          "required": true
+        },
+        "customer_id": {
+          "type": "string",
+          "description": "The customer id for this session. Use the value from customer_context/session if available, otherwise 'unknown'.",
+          "required": false
+        }
+      }
+    },
+    {
+      "name": "process_uploaded_document",
+      "description": "Classify a block of pasted document text and, if it is health-insurance-related, extract structured fields (fund, tier, premium, cover type, etc.). If it is not health-insurance-related, return a rejection with a reason. Call this whenever the customer pastes an 'uploaded document'.",
+      "parameters": {
+        "document_text": {
+          "type": "string",
+          "description": "The full pasted text of the uploaded document.",
+          "required": true
+        }
+      }
+    }
+  ]
+}
