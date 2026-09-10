@@ -2,29 +2,24 @@
 agent_client.py — the single seam for talking to the Bedrock Agent.
 
 This is deliberately the ONLY place that calls bedrock-agent-runtime.InvokeAgent.
-Later it gets wrapped by a Lambda handler and instrumented with OpenTelemetry, so:
 
   * invoke_agent(customer_id, session_id, message) -> dict is the one entry point.
-  * The returned "trace" is a list of STRUCTURED dicts (tool calls with input/
-    output, KB retrievals, guardrail actions, model rationale) — not printed
-    strings — so each entry maps cleanly onto a future OTel span.
-  * Cross-session memory (keyed by customer_id) lives in a small DynamoDB table
-    and is injected as Bedrock session state, so a returning customer_id resumes
-    with prior context.
-
-No OTel SDK is added here yet — see the trace_entry() shape for the seam.
+  * Conversation continuity is Bedrock's sessionId (same session_id = same
+    chat). Prior turns are not prepended onto the user message.
+  * Datadog Agent Observability tracks the same session_id on the workflow span.
 """
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
 
 import boto3
+from ddtrace.llmobs import LLMObs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ai_guard  # noqa: E402
 import config  # noqa: E402
 
 
@@ -33,7 +28,6 @@ import config  # noqa: E402
 # ---------------------------------------------------------------------------
 _STATE: Optional[Dict[str, Any]] = None
 _RUNTIME = None
-_DDB = None
 
 
 def _state() -> Dict[str, Any]:
@@ -56,58 +50,6 @@ def _runtime():
     return _RUNTIME
 
 
-def _ddb():
-    global _DDB
-    if _DDB is None:
-        _DDB = boto3.client("dynamodb", region_name=config.REGION)
-    return _DDB
-
-
-# ---------------------------------------------------------------------------
-# Memory (DynamoDB, keyed by customer_id)
-# ---------------------------------------------------------------------------
-def _memory_table() -> str:
-    return _state().get("memory_table", config.MEMORY_TABLE)
-
-
-def load_memory(customer_id: str) -> Dict[str, Any]:
-    """Return {'context': str, 'turns': [str, ...]} for a customer (or empty)."""
-    try:
-        r = _ddb().get_item(
-            TableName=_memory_table(),
-            Key={"customer_id": {"S": customer_id}},
-        )
-    except Exception:  # noqa: BLE001 - memory is best-effort for a demo
-        return {"context": "", "turns": []}
-    item = r.get("Item")
-    if not item:
-        return {"context": "", "turns": []}
-    return {
-        "context": item.get("context", {}).get("S", ""),
-        "turns": [t.get("S", "") for t in item.get("turns", {}).get("L", [])],
-    }
-
-
-def save_memory(customer_id: str, user_message: str) -> str:
-    """Append this turn to the customer's memory and return the updated context."""
-    mem = load_memory(customer_id)
-    turns = (mem["turns"] + [user_message])[-10:]  # keep last 10 user turns
-    context = "Earlier the customer said: " + " | ".join(turns)
-    try:
-        _ddb().put_item(
-            TableName=_memory_table(),
-            Item={
-                "customer_id": {"S": customer_id},
-                "context": {"S": context[:1900]},
-                "turns": {"L": [{"S": t[:400]} for t in turns]},
-                "updated": {"S": datetime.datetime.utcnow().isoformat() + "Z"},
-            },
-        )
-    except Exception:  # noqa: BLE001
-        pass
-    return context
-
-
 # ---------------------------------------------------------------------------
 # Trace helpers — the shape below is the future OTel-span seam.
 # ---------------------------------------------------------------------------
@@ -115,6 +57,32 @@ def trace_entry(kind: str, **attrs) -> Dict[str, Any]:
     """One structured trace record. kind ∈ {tool_call, kb_lookup, guardrail,
     rationale}. attrs become span attributes later."""
     return {"kind": kind, **attrs}
+
+
+def _retrieved_chunk(ref: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a Bedrock retrievedReference into text + source document + score."""
+    loc = ref.get("location") or {}
+    s3 = loc.get("s3Location") or {}
+    uri = s3.get("uri") or loc.get("uri") or ""
+    md = ref.get("metadata") or {}
+    if not uri:
+        uri = (
+            md.get("x-amz-bedrock-kb-source-uri")
+            or md.get("sourceUri")
+            or md.get("source")
+            or ""
+        )
+    document = str(uri).rsplit("/", 1)[-1] if uri else ""
+    score = ref.get("score")
+    if score is None:
+        score = md.get("score")
+    return {
+        "text": (ref.get("content") or {}).get("text", "")[:600],
+        "document": document,
+        "uri": uri,
+        "score": score,
+        "source": loc,
+    }
 
 
 def _parse_orchestration(trace_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -151,13 +119,7 @@ def _parse_orchestration(trace_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
                                output=_maybe_json(ag_out.get("text"))))
     kb_out = obs.get("knowledgeBaseLookupOutput")
     if kb_out:
-        chunks = []
-        for ref in kb_out.get("retrievedReferences", []):
-            chunks.append({
-                "text": ref.get("content", {}).get("text", "")[:600],
-                "source": ref.get("location", {}),
-                "score": ref.get("metadata", {}).get("score"),
-            })
+        chunks = [_retrieved_chunk(ref) for ref in kb_out.get("retrievedReferences", [])]
         out.append(trace_entry("kb_lookup", phase="output", chunks=chunks))
 
     # Model rationale (the agent's reasoning step), useful for the demo/trace.
@@ -194,9 +156,19 @@ def _maybe_json(text: Optional[str]) -> Any:
 # ---------------------------------------------------------------------------
 # THE entry point
 # ---------------------------------------------------------------------------
-def invoke_agent(customer_id: str, session_id: str, message: str) -> Dict[str, Any]:
+def invoke_agent(
+    customer_id: str,
+    session_id: str,
+    message: str,
+    agent_id: Optional[str] = None,
+    alias_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Invoke the Bedrock Agent for one turn.
+
+    agent_id/alias_id default to the deployed state (.deployment.json) but can
+    be overridden to target a different agent/alias, e.g. a variant agent
+    provisioned for a model-comparison experiment.
 
     Returns:
         {
@@ -207,51 +179,58 @@ def invoke_agent(customer_id: str, session_id: str, message: str) -> Dict[str, A
         }
     """
     st = _state()
-    agent_id = st["agent_id"]
-    alias_id = st["agent_alias_id"]
-
-    # Pull prior context for this returning customer and inject it as session
-    # state. We also prepend a compact hint so continuity is robust regardless of
-    # the agent's prompt template.
-    mem = load_memory(customer_id)
-    context = mem.get("context", "")
-    input_text = message
-    if context:
-        input_text = f"[known customer context: {context}]\n\n{message}"
+    agent_id = agent_id or st["agent_id"]
+    alias_id = alias_id or st["agent_alias_id"]
 
     session_state = {
-        "sessionAttributes": {"customer_id": customer_id},
+        "sessionAttributes": {
+            "customer_id": customer_id,
+            "session_id": session_id,
+        },
         "promptSessionAttributes": {
             "customer_id": customer_id,
-            "customer_context": context or "none",
+            "session_id": session_id,
         },
     }
 
-    resp = _runtime().invoke_agent(
-        agentId=agent_id,
-        agentAliasId=alias_id,
-        sessionId=session_id,
-        inputText=input_text,
-        enableTrace=True,
-        sessionState=session_state,
-    )
+    with LLMObs.workflow(name="invoke_agent", session_id=session_id):
+        LLMObs.annotate(
+            input_data=message,
+            tags={"user_id": customer_id, "user_handle": customer_id},
+        )
+        blocked = ai_guard.evaluate_prompt(message)
+        if blocked:
+            LLMObs.annotate(output_data=blocked["response"])
+            return {
+                "response": blocked["response"],
+                "trace": blocked.get("trace") or [],
+                "customer_id": customer_id,
+                "session_id": session_id,
+            }
+        resp = _runtime().invoke_agent(
+            agentId=agent_id,
+            agentAliasId=alias_id,
+            sessionId=session_id,
+            inputText=message,
+            enableTrace=True,
+            sessionState=session_state,
+        )
 
-    response_text = ""
-    trace: List[Dict[str, Any]] = []
-    for event in resp["completion"]:
-        if "chunk" in event:
-            response_text += event["chunk"]["bytes"].decode("utf-8")
-        elif "trace" in event:
-            trace_obj = event["trace"].get("trace", {})
-            trace.extend(_parse_orchestration(trace_obj))
-            trace.extend(_parse_guardrail(trace_obj))
+        response_text = ""
+        trace: List[Dict[str, Any]] = []
+        for event in resp["completion"]:
+            if "chunk" in event:
+                response_text += event["chunk"]["bytes"].decode("utf-8")
+            elif "trace" in event:
+                trace_obj = event["trace"].get("trace", {})
+                trace.extend(_parse_orchestration(trace_obj))
+                trace.extend(_parse_guardrail(trace_obj))
 
-    # Persist this turn so the next call with the same customer_id has continuity.
-    save_memory(customer_id, message)
-
-    return {
-        "response": response_text.strip(),
-        "trace": trace,
-        "customer_id": customer_id,
-        "session_id": session_id,
-    }
+        reply = response_text.strip()
+        LLMObs.annotate(output_data=reply)
+        return {
+            "response": reply,
+            "trace": trace,
+            "customer_id": customer_id,
+            "session_id": session_id,
+        }

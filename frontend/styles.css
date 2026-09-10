@@ -45,6 +45,25 @@ a { color: inherit; }
 .nav-links a:hover { color: var(--purple); }
 .nav-login { background: var(--purple-light); color: var(--purple) !important; padding: 8px 16px; border-radius: 999px; }
 
+/* ── Assistant promo banner (Datadog feature flag) ─ */
+.assistant-banner {
+  background: var(--purple-light);
+  border-bottom: 1px solid var(--line);
+}
+.assistant-banner-inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.assistant-banner p { margin: 0; font-size: 15px; line-height: 1.45; color: var(--ink); }
+.assistant-banner strong { color: var(--purple); }
+.assistant-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.assistant-banner .btn { padding: 8px 16px; font-size: 14px; }
+
 /* ── Hero ────────────────────────────────────────── */
 .hero { background: linear-gradient(135deg, var(--purple) 0%, #7a3fb0 100%); color: #fff; }
 .hero-inner { max-width: 1080px; margin: 0 auto; padding: 64px 24px; display: grid; grid-template-columns: 1.2fr .8fr; gap: 48px; align-items: center; }
@@ -134,4 +153,5 @@ a { color: inherit; }
   .hero h1 { font-size: 34px; }
   .step-arrow { display: none; }
   .nav-links a:not(.nav-login) { display: none; }
+  .assistant-banner-inner { flex-direction: column; align-items: flex-start; }
 }

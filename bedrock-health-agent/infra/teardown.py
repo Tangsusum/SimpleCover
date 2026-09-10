@@ -53,6 +53,12 @@ def main():
     if s.get("kb_id"):
         _try("knowledge base", lambda: ba.delete_knowledge_base(
             knowledgeBaseId=s["kb_id"]))
+    if s.get("legacy_kb_id") and s.get("legacy_data_source_id"):
+        _try("legacy data source", lambda: ba.delete_data_source(
+            knowledgeBaseId=s["legacy_kb_id"], dataSourceId=s["legacy_data_source_id"]))
+    if s.get("legacy_kb_id"):
+        _try("legacy knowledge base", lambda: ba.delete_knowledge_base(
+            knowledgeBaseId=s["legacy_kb_id"]))
 
     common.log("Deleting Guardrail")
     if s.get("guardrail_id"):
@@ -70,6 +76,16 @@ def main():
         else:
             _try(f"{kind} policy", lambda k=kind, n=name:
                  c["aoss"].delete_security_policy(name=n, type=k))
+
+    common.log("Deleting S3 Vectors index + bucket")
+    s3v = c.get("s3vectors")
+    vec_bucket = s.get("s3_vector_bucket") or config.S3_VECTOR_BUCKET
+    vec_index = s.get("s3_vector_index") or config.S3_VECTOR_INDEX
+    if s3v and (s.get("s3_vector_bucket") or s.get("vector_store") == "s3_vectors"):
+        _try("s3 vector index", lambda: s3v.delete_index(
+            vectorBucketName=vec_bucket, indexName=vec_index))
+        _try("s3 vector bucket", lambda: s3v.delete_vector_bucket(
+            vectorBucketName=vec_bucket))
 
     common.log("Deleting Lambda")
     if s.get("lambda_name"):

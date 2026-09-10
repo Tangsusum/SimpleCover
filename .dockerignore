@@ -1,0 +1,17 @@
+.git
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+.agents
+.claude
+.env
+.DS_Store
+**/.deployment.variant.json
+bedrock-health-agent/infra
+bedrock-health-agent/experiments
+bedrock-health-agent/kb_docs
+bedrock-health-agent/.venv
+*.md
+frontend/package-lock.json
+agent-transcripts

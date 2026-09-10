@@ -1,4 +1,4 @@
-# CTM Health-Insurance AI Assistant — Bedrock Agent prototype
+# SimpleCover Health-Insurance AI Assistant — Bedrock Agent prototype
 
 A **bare-minimum, throwaway demo** of an AI health-insurance sales assistant on
 **Amazon Bedrock Agents**. It shows the core call-centre-replacement slice
@@ -19,13 +19,14 @@ The code is structured so that step is easy — see [Design for the future](#des
 
 | Piece | Where | What it is |
 |---|---|---|
-| KB documents | `kb_docs/*.md` | 5 mock policies (Basic→Gold across 3 fake funds) + 2 general-knowledge docs (tiers/rebate/MLS/LHC, waiting periods) |
+| KB documents | `kb_docs/*.md` | 5 mock policies (Basic→Gold across 3 fake funds) + 2 general-knowledge docs (tiers/rebate/MLS/LHC, waiting periods). Ingested into the Bedrock Knowledge Base. |
 | Tools Lambda | `lambdas/insurance_tools/handler.py` | `get_quotes`, `estimate_rebate_and_lhc`, `schedule_callback`, `process_uploaded_document` — all mocked, self-contained |
 | Agent prompt | `agent/instructions.txt` | System instructions (clarify-before-quote, never invent prices, handoff rules, doc handling, scope/injection resistance) |
 | Action schema | `agent/action_group_functions.json` | Bedrock function schema for the 4 tools |
 | Guardrail | created by `provision.py` | PROMPT_ATTACK filter + off-topic denied-topic |
 | Memory | DynamoDB table | Cross-session context keyed by `customer_id` |
-| IaC | `infra/provision.py`, `infra/teardown.py` | boto3 stand-up / tear-down of *everything* |
+| IaC | `infra/provision.py`, `infra/ingest_kb.py`, `infra/teardown.py` | boto3 stand-up / re-ingest / tear-down |
+| Retrieval check | `validate_retrieval.py` | Direct `Retrieve` API (not the agent) — top-3 chunks per topic query |
 | Client seam | `agent_client.py` | The single `invoke_agent(...)` entry point (future Lambda handler) |
 | CLI | `chat.py` | Local test harness only |
 | Scenarios | `scenarios.md` | Copy-paste inputs for all 8 required use cases |
@@ -47,7 +48,7 @@ The code is structured so that step is easy — see [Design for the future](#des
    │      │                         │               │
    │      ▼                         ▼               │
    │  Knowledge Base           Action group         │
-   │  (OpenSearch Serverless)  (Lambda: 4 tools)     │
+   │  (S3 Vectors; OSS fallback)  (Lambda: 4 tools)  │
    │      ▲                                          │
    │  S3 (kb_docs/*.md) ──ingest──┘                  │
    └────────────────────────────────────────────────┘
@@ -81,9 +82,15 @@ Optional config overrides (all have sensible defaults in `config.py`):
 
 ```bash
 export AWS_REGION=ap-southeast-2
-export CTM_PREFIX=ctm-health-demo          # name prefix for every resource
-export CTM_AGENT_MODEL_ID=au.anthropic.claude-sonnet-4-5-20250929-v1:0
+export SIMPLE_COVER_PREFIX=simple-cover-health-demo   # name prefix for every resource
+export SIMPLE_COVER_AGENT_MODEL_ID=au.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
+
+The live stack recorded in `.deployment.json` still uses the original AWS
+prefix `ctm-health-demo`. Leave those resource names as-is — `config.py` reads
+the prefix from that file so the client keeps talking to the existing bucket,
+roles, and agent. Only set `SIMPLE_COVER_PREFIX` when you intend to provision a
+**new** stack.
 
 ---
 
@@ -93,14 +100,37 @@ export CTM_AGENT_MODEL_ID=au.anthropic.claude-sonnet-4-5-20250929-v1:0
 python infra/provision.py
 ```
 
-This stands up **everything** (S3 + docs, IAM roles, Lambda, OpenSearch
-Serverless collection + index, Knowledge Base + ingestion, Guardrail, Agent +
-action group + KB association + alias, DynamoDB table) and writes a
-`.deployment.json` state file that the client and teardown read.
+This stands up **everything** (S3 + `kb_docs/`, IAM roles, Lambda, **S3 Vectors**
+bucket + index, Knowledge Base + ingestion, Agent + action group + KB
+association + alias, DynamoDB table) and writes a `.deployment.json` state file
+that the client and teardown read.
 
-Takes ~5–10 minutes, mostly waiting on the OpenSearch Serverless collection and
-KB ingestion. It's chatty about what it's doing. If a step fails midway, fix the
-cause and re-run (most steps are idempotent), or run teardown and start clean.
+Vector store: **Amazon S3 Vectors** in `ap-southeast-2`. If S3 Vectors is not
+available in the account/region, provision falls back to OpenSearch Serverless.
+
+Takes several minutes, mostly waiting on Knowledge Base ingestion. It's chatty
+about what it's doing. If a step fails midway, fix the cause and re-run (most
+steps are idempotent), or run teardown and start clean.
+
+### Re-ingest mock docs
+
+After editing files in `kb_docs/`:
+
+```bash
+python infra/ingest_kb.py
+```
+
+That re-uploads the markdown to the docs bucket and starts a Knowledge Base
+ingestion job. Full `provision.py` also re-uploads and re-ingests.
+
+### Sanity-check retrieval (Retrieve API, not the agent)
+
+```bash
+python validate_retrieval.py
+```
+
+Prints the top 3 chunks (score + source filename) for queries aimed at each
+mock document. Expect the matching `kb_docs/*.md` filename in the top 3.
 
 ---
 
@@ -121,7 +151,9 @@ inside the CLI:
 - `:quit`
 
 Each reply prints a `--- trace ---` block so you can *see* the tool calls, KB
-retrievals, and guardrail actions that fired.
+retrievals (chunk text **and source document filename + score**), and any
+guardrail actions that fired. Ask a policy/waiting-period question to see
+`kb_lookup` traces.
 
 ---
 

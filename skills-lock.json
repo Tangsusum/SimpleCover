@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-observability-auto-experiment": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-auto-experiment/SKILL.md",
+      "computedHash": "9a6c9e4b0f0ccb1bf132dc9fa8556aee4057313e47f97a45dc707c0ea595f998"
+    },
+    "agent-observability-eval-bootstrap": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-eval-bootstrap/SKILL.md",
+      "computedHash": "7e90360a7f6960e405fb7613caf4e2b80112acee97db99c0b4df7432fb5bcd1b"
+    },
+    "agent-observability-eval-pipeline": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-eval-pipeline/SKILL.md",
+      "computedHash": "939b977781e4fc56cf1a71fba4fc12f0f5563e7c08526c0cca4778ec7c6e5b40"
+    },
+    "agent-observability-experiment-analyzer": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-experiment-analyzer/SKILL.md",
+      "computedHash": "c418e5821b0c45d6efbb88dbdfc1fb4b677d574a8b0aa10664b2bb7eccbd6801"
+    },
+    "agent-observability-experiment-py-bootstrap": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-experiment-py-bootstrap/SKILL.md",
+      "computedHash": "083e5e0f87e63c5ca1ef63333948cb3b8659667c7b883e27570b3b1f4bd0dba2"
+    },
+    "agent-observability-replay-trace": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-replay-trace/SKILL.md",
+      "computedHash": "f107e75394b1be0a3e1994bdeae47e9cc122ada879bd8bfed3300602def5870a"
+    },
+    "agent-observability-session-classify": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-session-classify/SKILL.md",
+      "computedHash": "47ffa25357b3726d1e98a7d2afaa8e3e36115b8563630d792529ba35113377ff"
+    },
+    "agent-observability-trace-rca": {
+      "source": "datadog-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "agent-observability/agent-observability-trace-rca/SKILL.md",
+      "computedHash": "ed2720ea4ba295fdab0f0382223bc839b240cc9eb1da488872249fabf5862720"
+    }
+  }
+}

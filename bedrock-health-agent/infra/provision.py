@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Provision the whole CTM health-insurance demo on AWS with boto3.
+Provision the whole SimpleCover health-insurance demo on AWS with boto3.
 
-Creates: S3 bucket + KB docs, IAM roles, tools Lambda, OpenSearch Serverless
-vector store + index, Bedrock Knowledge Base + ingestion, a Guardrail, the
-Bedrock Agent (+ action group + KB association + alias), and a DynamoDB memory
-table. Records everything to config.STATE_FILE so teardown.py can remove it.
+Creates: S3 bucket + `kb_docs/` uploads, IAM roles, tools Lambda, an S3 Vectors
+vector store (falls back to OpenSearch Serverless if S3 Vectors is unavailable),
+Bedrock Knowledge Base + ingestion, the Bedrock Agent (+ action group + KB
+association + alias), and a DynamoDB memory table. Records everything to
+config.STATE_FILE so teardown.py can remove it.
 
 Run:  python infra/provision.py
 Idempotency is best-effort: most creates tolerate "already exists". If a run
@@ -29,6 +30,10 @@ INSTRUCTIONS_PATH = os.path.join(REPO, "agent", "instructions.txt")
 FUNCTIONS_PATH = os.path.join(REPO, "agent", "action_group_functions.json")
 
 AGENT_ROLE_NAME = "AmazonBedrockExecutionRoleForAgents_" + config.PREFIX  # required prefix
+KB_SELECTION = (
+    "Use this knowledge base for questions about specific policy inclusions, "
+    "tiers, waiting periods, rebates, MLS/LHC, and how SimpleCover operates"
+)
 
 
 def main():
@@ -42,9 +47,12 @@ def main():
         step_s3(c, state)
         step_iam(c, acct, state)
         step_lambda(c, acct, state)
-        step_opensearch(c, acct, state)
+        if _s3_vectors_available(c):
+            step_s3_vectors(c, acct, state)
+        else:
+            common.log("S3 Vectors unavailable in this account/region — using OpenSearch Serverless")
+            step_opensearch(c, acct, state)
         step_kb(c, acct, state)
-        step_guardrail(c, state)
         step_agent(c, acct, state)
         step_memory_table(c, state)
     finally:
@@ -130,7 +138,7 @@ def step_iam(c, acct, state):
     lambda_trust = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"},
          "Action": "sts:AssumeRole"}]}
-    lambda_role_arn = _create_role(c, config.LAMBDA_ROLE, lambda_trust, "CTM demo tools lambda")
+    lambda_role_arn = _create_role(c, config.LAMBDA_ROLE, lambda_trust, "SimpleCover demo tools lambda")
     c["iam"].attach_role_policy(
         RoleName=config.LAMBDA_ROLE,
         PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
@@ -142,7 +150,7 @@ def step_iam(c, acct, state):
     kb_trust = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Principal": {"Service": "bedrock.amazonaws.com"},
          "Action": "sts:AssumeRole"}]}
-    kb_role_arn = _create_role(c, config.KB_ROLE, kb_trust, "CTM demo KB role")
+    kb_role_arn = _create_role(c, config.KB_ROLE, kb_trust, "SimpleCover demo KB role")
     embed_arn = f"arn:aws:bedrock:{region}::foundation-model/{config.EMBED_MODEL_ID}"
     _put_inline(c, config.KB_ROLE, "kb-perms", {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": ["bedrock:InvokeModel"], "Resource": [embed_arn]},
@@ -151,6 +159,16 @@ def step_iam(c, acct, state):
         {"Effect": "Allow", "Action": ["s3:GetObject", "s3:ListBucket"],
          "Resource": [f"arn:aws:s3:::{config.S3_BUCKET}",
                       f"arn:aws:s3:::{config.S3_BUCKET}/*"]},
+        {"Effect": "Allow",
+         "Action": [
+             "s3vectors:GetIndex", "s3vectors:QueryVectors", "s3vectors:GetVectors",
+             "s3vectors:PutVectors", "s3vectors:DeleteVectors", "s3vectors:ListVectors",
+             "s3vectors:GetVectorBucket", "s3vectors:ListIndexes",
+         ],
+         "Resource": [
+             f"arn:aws:s3vectors:{region}:{acct}:bucket/{config.S3_VECTOR_BUCKET}",
+             f"arn:aws:s3vectors:{region}:{acct}:bucket/{config.S3_VECTOR_BUCKET}/*",
+         ]},
     ]})
     state["kb_role"] = config.KB_ROLE
     state["kb_role_arn"] = kb_role_arn
@@ -160,7 +178,7 @@ def step_iam(c, acct, state):
         {"Effect": "Allow", "Principal": {"Service": "bedrock.amazonaws.com"},
          "Action": "sts:AssumeRole",
          "Condition": {"StringEquals": {"aws:SourceAccount": acct}}}]}
-    agent_role_arn = _create_role(c, AGENT_ROLE_NAME, agent_trust, "CTM demo agent role")
+    agent_role_arn = _create_role(c, AGENT_ROLE_NAME, agent_trust, "SimpleCover demo agent role")
     # Inference profiles (au.*/us.*/apac.*) invoke FMs in more than one region.
     _put_inline(c, AGENT_ROLE_NAME, "agent-perms", {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow",
@@ -171,8 +189,6 @@ def step_iam(c, acct, state):
                       f"arn:aws:bedrock:*:{acct}:application-inference-profile/*"]},
         {"Effect": "Allow", "Action": ["bedrock:Retrieve"],
          "Resource": [f"arn:aws:bedrock:{region}:{acct}:knowledge-base/*"]},
-        {"Effect": "Allow", "Action": ["bedrock:ApplyGuardrail"],
-         "Resource": [f"arn:aws:bedrock:{region}:{acct}:guardrail/*"]},
     ]})
     state["agent_role"] = AGENT_ROLE_NAME
     state["agent_role_arn"] = agent_role_arn
@@ -202,7 +218,7 @@ def step_lambda(c, acct, state):
             Code={"ZipFile": code},
             Timeout=30,
             MemorySize=256,
-            Description="CTM demo mock insurance tools",
+            Description="SimpleCover demo mock insurance tools",
         )
         arn = r["FunctionArn"]
         common.log(f"  created {config.LAMBDA_NAME}")
@@ -225,8 +241,88 @@ def _normalize_caller_arn(c, acct):
     return arn
 
 
+def _s3_vectors_available(c) -> bool:
+    s3v = c.get("s3vectors")
+    if s3v is None:
+        return False
+    try:
+        s3v.list_vector_buckets(maxResults=1)
+        return True
+    except Exception as e:  # noqa: BLE001
+        common.log(f"  S3 Vectors probe failed ({e})")
+        return False
+
+
+def _s3v_index_arn(s3v, bucket, index, acct):
+    try:
+        info = s3v.get_index(vectorBucketName=bucket, indexName=index).get("index") or {}
+        if info.get("indexArn"):
+            return info["indexArn"]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for idx in s3v.list_indexes(vectorBucketName=bucket).get("indexes", []):
+            if idx.get("indexName") == index and idx.get("indexArn"):
+                return idx["indexArn"]
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        f"arn:aws:s3vectors:{config.REGION}:{acct}:bucket/{bucket}/index/{index}"
+    )
+
+
+def step_s3_vectors(c, acct, state):
+    """Create the S3 Vectors bucket + index used by the Knowledge Base."""
+    common.log("S3 Vectors: bucket + index")
+    s3v = c["s3vectors"]
+    bucket = config.S3_VECTOR_BUCKET
+    index = config.S3_VECTOR_INDEX
+    try:
+        s3v.create_vector_bucket(vectorBucketName=bucket)
+        common.log(f"  created vector bucket {bucket}")
+    except botocore.exceptions.ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("ConflictException", "BucketAlreadyExists", "AlreadyExists"):
+            common.log(f"  vector bucket {bucket} already exists")
+        else:
+            raise
+    info = s3v.get_vector_bucket(vectorBucketName=bucket).get("vectorBucket") or {}
+    bucket_arn = info.get("vectorBucketArn") or (
+        f"arn:aws:s3vectors:{config.REGION}:{acct}:bucket/{bucket}"
+    )
+    try:
+        s3v.create_index(
+            vectorBucketName=bucket,
+            indexName=index,
+            dimension=config.EMBED_DIMENSIONS,
+            dataType="float32",
+            distanceMetric="cosine",
+            metadataConfiguration={
+                "nonFilterableMetadataKeys": ["AMAZON_BEDROCK_TEXT"],
+            },
+        )
+        common.log(f"  created vector index {index}")
+    except botocore.exceptions.ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("ConflictException", "AlreadyExists"):
+            common.log(f"  vector index {index} already exists")
+        else:
+            raise
+    index_arn = _s3v_index_arn(s3v, bucket, index, acct)
+    state["vector_store"] = "s3_vectors"
+    state["s3_vector_bucket"] = bucket
+    state["s3_vector_index"] = index
+    state["s3_vector_bucket_arn"] = bucket_arn
+    state["s3_vector_index_arn"] = index_arn
+    common.log(f"  index arn {index_arn}")
+    common.log("  waiting 8s for S3 Vectors IAM/index to settle …")
+    time.sleep(8)
+
+
+# ---------------------------------------------------------------------------
 def step_opensearch(c, acct, state):
     common.log("OpenSearch Serverless: policies + collection + index")
+    state["vector_store"] = "opensearch_serverless"
     coll = config.OSS_COLLECTION
     aoss = c["aoss"]
 
@@ -267,7 +363,7 @@ def step_opensearch(c, acct, state):
     # collection
     try:
         aoss.create_collection(name=coll, type="VECTORSEARCH",
-                               description="CTM demo vector store")
+                               description="SimpleCover demo vector store")
         common.log(f"  creating collection {coll}")
     except aoss.exceptions.ConflictException:
         common.log(f"  collection {coll} already exists")
@@ -331,15 +427,56 @@ def _create_index(endpoint, acct):
 
 # ---------------------------------------------------------------------------
 def step_kb(c, acct, state):
-    common.log("Bedrock Knowledge Base: create + ingest")
+    common.log("Bedrock Knowledge Base: create + ingest kb_docs/")
     ba = c["bedrock_agent"]
     embed_arn = f"arn:aws:bedrock:{config.REGION}::foundation-model/{config.EMBED_MODEL_ID}"
+    use_s3v = state.get("vector_store") == "s3_vectors" or bool(state.get("s3_vector_index_arn"))
+
+    # Existing OpenSearch KB can't be converted in place — create a new S3 Vectors KB.
+    if use_s3v and state.get("kb_id") and state.get("kb_vector_store") != "s3_vectors":
+        state["legacy_kb_id"] = state["kb_id"]
+        state["legacy_data_source_id"] = state.get("data_source_id")
+        common.log(f"  migrating off OSS KB {state['legacy_kb_id']} → S3 Vectors")
+        state.pop("kb_id", None)
+        state.pop("data_source_id", None)
+        state["kb_associated"] = False
 
     if state.get("kb_id"):
         common.log(f"  KB {state['kb_id']} already recorded, skipping create")
+    elif use_s3v:
+        kb_name = config.KB_NAME if not state.get("legacy_kb_id") else f"{config.PREFIX}-s3v-kb"
+        r = ba.create_knowledge_base(
+            name=kb_name,
+            description=KB_SELECTION,
+            roleArn=state["kb_role_arn"],
+            knowledgeBaseConfiguration={
+                "type": "VECTOR",
+                "vectorKnowledgeBaseConfiguration": {
+                    "embeddingModelArn": embed_arn,
+                    "embeddingModelConfiguration": {
+                        "bedrockEmbeddingModelConfiguration": {
+                            "dimensions": config.EMBED_DIMENSIONS,
+                            "embeddingDataType": "FLOAT32",
+                        }
+                    },
+                },
+            },
+            storageConfiguration={
+                "type": "S3_VECTORS",
+                "s3VectorsConfiguration": {
+                    "indexArn": state["s3_vector_index_arn"],
+                },
+            },
+        )
+        state["kb_id"] = r["knowledgeBase"]["knowledgeBaseId"]
+        state["kb_vector_store"] = "s3_vectors"
+        common.save_state(state)
+        common.log(f"  created S3 Vectors KB {state['kb_id']}")
     else:
+        state["vector_store"] = "opensearch_serverless"
         r = ba.create_knowledge_base(
             name=config.KB_NAME,
+            description=KB_SELECTION,
             roleArn=state["kb_role_arn"],
             knowledgeBaseConfiguration={
                 "type": "VECTOR",
@@ -359,8 +496,9 @@ def step_kb(c, acct, state):
             },
         )
         state["kb_id"] = r["knowledgeBase"]["knowledgeBaseId"]
+        state["kb_vector_store"] = "opensearch_serverless"
         common.save_state(state)
-        common.log(f"  created KB {state['kb_id']}")
+        common.log(f"  created OpenSearch KB {state['kb_id']}")
 
     def _kb_ready():
         s = ba.get_knowledge_base(knowledgeBaseId=state["kb_id"]
@@ -378,7 +516,7 @@ def step_kb(c, acct, state):
             name=f"{config.PREFIX}-s3",
             dataSourceConfiguration={
                 "type": "S3",
-                "s3Configuration": {"bucketArn": f"arn:aws:s3:::{config.S3_BUCKET}"},
+                "s3Configuration": {"bucketArn": f"arn:aws:s3:::{state.get('s3_bucket') or config.S3_BUCKET}"},
             },
         )
         state["data_source_id"] = ds["dataSource"]["dataSourceId"]
@@ -415,42 +553,7 @@ def step_kb(c, acct, state):
                                ingestionJobId=job_id)["ingestionJob"]
     if ing["status"] != "COMPLETE":
         raise RuntimeError(f"KB ingestion failed: {ing.get('failureReasons', ing['status'])}")
-
-
-# ---------------------------------------------------------------------------
-def step_guardrail(c, state):
-    common.log("Guardrail: create + version")
-    br = c["bedrock"]
-    if not state.get("guardrail_id"):
-        r = br.create_guardrail(
-            name=config.GUARDRAIL_NAME,
-            description="CTM demo — prompt-injection + off-topic protection",
-            blockedInputMessaging=("I can only help with private health insurance, "
-                                   "and I can't act on that request."),
-            blockedOutputsMessaging=("I can only help with private health insurance."),
-            contentPolicyConfig={"filtersConfig": [
-                {"type": "PROMPT_ATTACK", "inputStrength": "HIGH", "outputStrength": "NONE"},
-            ]},
-            topicPolicyConfig={"topicsConfig": [{
-                "name": "NonInsuranceTopics",
-                "definition": ("Requests unrelated to private health insurance, such "
-                               "as coding help, general chit-chat, or other products."),
-                "examples": [
-                    "Write me a poem about the ocean.",
-                    "Help me write Python code.",
-                    "What do you think about politics?",
-                ],
-                "type": "DENY",
-            }]},
-        )
-        state["guardrail_id"] = r["guardrailId"]
-        state["guardrail_arn"] = r["guardrailArn"]
-        common.save_state(state)
-        common.log(f"  created guardrail {state['guardrail_id']}")
-    v = br.create_guardrail_version(guardrailIdentifier=state["guardrail_id"],
-                                    description="demo v1")
-    state["guardrail_version"] = v["version"]
-    common.log(f"  guardrail version {state['guardrail_version']}")
+    common.log(f"  ingested kb_docs into KB {state['kb_id']}")
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +572,6 @@ def step_agent(c, acct, state):
             foundationModel=config.AGENT_MODEL_ID,
             instruction=instructions,
             idleSessionTTLInSeconds=1800,
-            guardrailConfiguration={
-                "guardrailIdentifier": state["guardrail_id"],
-                "guardrailVersion": state["guardrail_version"],
-            },
         )
         state["agent_id"] = r["agent"]["agentId"]
         common.save_state(state)
@@ -490,6 +589,18 @@ def step_agent(c, acct, state):
 
     common.wait_until(_agent_status({"NOT_PREPARED", "PREPARED"}),
                       "agent ready for edits", timeout=300, interval=10)
+
+    ba.update_agent(
+        agentId=agent_id,
+        agentName=config.AGENT_NAME,
+        agentResourceRoleArn=state["agent_role_arn"],
+        foundationModel=config.AGENT_MODEL_ID,
+        instruction=instructions,
+        idleSessionTTLInSeconds=1800,
+    )
+    common.log("  updated agent instructions / model")
+    common.wait_until(_agent_status({"NOT_PREPARED", "PREPARED"}),
+                      "agent ready after update", timeout=300, interval=10)
 
     # Lambda resource policy so Bedrock can invoke it (needs agent arn).
     try:
@@ -516,16 +627,34 @@ def step_agent(c, acct, state):
         state["action_group_id"] = ag["agentActionGroup"]["actionGroupId"]
         common.save_state(state)
         common.log(f"  created action group {state['action_group_id']}")
+    else:
+        ba.update_agent_action_group(
+            agentId=agent_id, agentVersion="DRAFT",
+            actionGroupId=state["action_group_id"],
+            actionGroupName=config.ACTION_GROUP,
+            actionGroupExecutor={"lambda": state["lambda_arn"]},
+            functionSchema={"functions": functions},
+            actionGroupState="ENABLED",
+        )
+        common.log("  updated action group")
 
-    # Associate KB
+    # Associate KB (disassociate a leftover OpenSearch KB after S3 Vectors migrate)
+    legacy = state.get("legacy_kb_id")
+    if legacy and legacy != state.get("kb_id"):
+        try:
+            ba.disassociate_agent_knowledge_base(
+                agentId=agent_id, agentVersion="DRAFT", knowledgeBaseId=legacy)
+            common.log(f"  disassociated legacy KB {legacy}")
+        except botocore.exceptions.ClientError as e:
+            common.log(f"  disassociate legacy KB: {e.response['Error']['Code']}")
+        state["kb_associated"] = False
+
     if not state.get("kb_associated"):
         try:
             ba.associate_agent_knowledge_base(
                 agentId=agent_id, agentVersion="DRAFT",
                 knowledgeBaseId=state["kb_id"],
-                description=("Product tiers, premiums, waiting periods, and general "
-                             "info on rebate/MLS/LHC. Search this for any product or "
-                             "how-it-works question."),
+                description=KB_SELECTION,
                 knowledgeBaseState="ENABLED",
             )
             state["kb_associated"] = True
@@ -534,18 +663,37 @@ def step_agent(c, acct, state):
         except botocore.exceptions.ClientError as e:
             if "already" not in str(e).lower():
                 raise
+            state["kb_associated"] = True
+    else:
+        try:
+            ba.update_agent_knowledge_base(
+                agentId=agent_id, agentVersion="DRAFT",
+                knowledgeBaseId=state["kb_id"],
+                description=KB_SELECTION,
+                knowledgeBaseState="ENABLED",
+            )
+            common.log("  updated knowledge base association")
+        except botocore.exceptions.ClientError as e:
+            common.log(f"  update KB association: {e.response['Error']['Code']}")
 
     # Prepare
     ba.prepare_agent(agentId=agent_id)
     common.wait_until(_agent_status({"PREPARED"}), "agent prepared",
                       timeout=300, interval=10)
 
-    # Alias
+    # Alias — create once, then retarget at the newly prepared DRAFT
     if not state.get("agent_alias_id"):
         al = ba.create_agent_alias(agentId=agent_id, agentAliasName=config.AGENT_ALIAS)
         state["agent_alias_id"] = al["agentAlias"]["agentAliasId"]
         common.save_state(state)
         common.log(f"  created alias {state['agent_alias_id']}")
+    else:
+        ba.update_agent_alias(
+            agentId=agent_id,
+            agentAliasId=state["agent_alias_id"],
+            agentAliasName=config.AGENT_ALIAS,
+        )
+        common.log(f"  updated alias {state['agent_alias_id']} to latest prepared version")
 
     def _alias_ready():
         s = ba.get_agent_alias(agentId=agent_id,

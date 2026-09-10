@@ -14,17 +14,23 @@ import config  # noqa: E402
 def clients():
     """Return the set of boto3 clients we need, all pinned to config.REGION."""
     s = boto3.Session(region_name=config.REGION)
-    return {
+    out = {
         "s3": s.client("s3"),
         "iam": s.client("iam"),
         "sts": s.client("sts"),
         "aoss": s.client("opensearchserverless"),
         "bedrock": s.client("bedrock"),                      # guardrails, models
         "bedrock_agent": s.client("bedrock-agent"),          # agents + KB
+        "bedrock_agent_runtime": s.client("bedrock-agent-runtime"),
         "lambda": s.client("lambda"),
         "dynamodb": s.client("dynamodb"),
         "logs": s.client("logs"),
     }
+    try:
+        out["s3vectors"] = s.client("s3vectors")
+    except Exception:  # noqa: BLE001 - older botocore / unsupported region
+        out["s3vectors"] = None
+    return out
 
 
 def account_id(c):
@@ -45,7 +51,7 @@ def save_state(state):
 
 
 def log(msg):
-    print(f"[ctm] {msg}", flush=True)
+    print(f"[simple_cover] {msg}", flush=True)
 
 
 def wait_until(fn, desc, timeout=600, interval=10):

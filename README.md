@@ -54,7 +54,7 @@ pip install -r requirements.txt
 uvicorn server:app --reload --port 8000
 
 # OR offline mock (no AWS, canned responses + traces, for UI demos):
-CTM_BACKEND_MOCK=1 uvicorn server:app --reload --port 8000
+SIMPLE_COVER_BACKEND_MOCK=1 uvicorn server:app --reload --port 8000
 ```
 
 Backend runs at **http://localhost:8000** — health check: `GET /api/health`.
@@ -104,9 +104,8 @@ them straight into the chat (use the Paste-document button for the two
 - No auth, no persistence beyond the in-memory browser session.
 - Pasted text stands in for a real file upload (no file/image upload).
 - Backend traces are exported with OpenTelemetry (OTLP/HTTP) to the local
-  Datadog Agent collector at `http://127.0.0.1:4318`. Service name `ctm_backend`,
+  Datadog Agent collector at `http://127.0.0.1:4318`. Service name `simple_cover_backend`,
   env `dev`. The Agent must have `otlp_config.receiver` enabled.
-- Mock mode (`CTM_BACKEND_MOCK=1`) returns lightly keyword-driven canned
+- Mock mode (`SIMPLE_COVER_BACKEND_MOCK=1`) returns lightly keyword-driven canned
   responses so the UI can be shown without a live agent; turn it off for the real
   thing.
-```

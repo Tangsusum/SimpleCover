@@ -4,3 +4,5 @@
 *.pyc
 .claude/
 .DS_Store
+.gcloudignore
+.dockerignore

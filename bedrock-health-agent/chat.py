@@ -25,6 +25,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+import ai_guard as _ai_guard  # noqa: E402
+
+_ai_guard.apply_env()
 import ddtrace.auto  # noqa: E402
 
 import argparse
@@ -55,10 +58,15 @@ def print_trace(trace):
         elif kind == "kb_lookup" and e.get("phase") == "output":
             print(f"    ← KB chunks  {len(e.get('chunks', []))} retrieved")
             for ch in e.get("chunks", [])[:3]:
-                print(f"        · {ch.get('text','')[:120]!r}")
+                doc = ch.get("document") or "?"
+                score = ch.get("score")
+                score_s = f"{score:.3f}" if isinstance(score, (int, float)) else str(score or "?")
+                print(f"        · [{doc}] score={score_s}  {ch.get('text','')[:120]!r}")
         elif kind == "guardrail":
             flag = "BLOCKED" if e.get("blocked") else "passed"
-            print(f"    ⚑ guardrail  {flag} ({e.get('action')})")
+            reason = e.get("reason") or ""
+            extra = f" — {reason}" if reason else ""
+            print(f"    ⚑ guardrail  {flag} ({e.get('action')}){extra}")
         elif kind == "rationale":
             print(f"    · rationale  {e.get('text','')[:160]}")
 
@@ -72,7 +80,7 @@ def main():
     session_id = new_session()
     show_trace = True
 
-    print(f"\nCTM Assist — customer={customer_id} session={session_id}")
+    print(f"\nSimpleCover Assist — customer={customer_id} session={session_id}")
     print("Type a message, or :paste / :new / :customer <id> / :trace on|off / :quit\n")
 
     while True:

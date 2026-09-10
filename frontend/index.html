@@ -16,8 +16,8 @@
         applicationId: "982ab0ef-608a-405d-89be-3d3033d68e3f",
         clientToken: "pub6f8a1340522470ddd064a690663e1996",
         site: "datadoghq.com",
-        service: "ctm_browser",
-        env: "dev",
+        service: "simple_cover_browser",
+        env: (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? "dev" : "gcp",
         version: "1.0",
         sessionSampleRate: 100,
         sessionReplaySampleRate: 100,
@@ -31,7 +31,13 @@
           "http://localhost:8000",
           "http://127.0.0.1:8000",
           {
-            match: function (url) { return /^https?:\/\/(localhost|127\.0\.0\.1):8000(?:\/|$)/.test(url); },
+            match: function (url) {
+              try {
+                var origin = new URL(url).origin;
+                if (origin === window.location.origin) return true;
+              } catch (e) { /* ignore */ }
+              return /^https?:\/\/(localhost|127\.0\.0\.1):8000(?:\/|$)/.test(url);
+            },
             propagatorTypes: ["datadog", "tracecontext"]
           }
         ],
@@ -39,6 +45,15 @@
     });
   </script>
   <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "@datadog/openfeature-browser": "https://esm.sh/@datadog/openfeature-browser@1.3.0",
+      "@openfeature/web-sdk": "https://esm.sh/@openfeature/web-sdk@1.10.0",
+      "@openfeature/core": "https://esm.sh/@openfeature/core"
+    }
+  }
+  </script>
 </head>
 <body>
   <!-- ── Top nav ─────────────────────────────────────────────── -->
@@ -57,6 +72,20 @@
       </nav>
     </div>
   </header>
+
+  <aside id="assistant-banner" class="assistant-banner" hidden>
+    <div class="assistant-banner-inner">
+      <p>
+        <strong>Try SimpleCover Assistant</strong>
+        — compare hospital and extras cover in plain English, then get an
+        indicative quote in minutes. No call-centre hold music.
+      </p>
+      <div class="assistant-banner-actions">
+        <button class="btn btn-accent" id="banner-chat" type="button">Chat with the assistant</button>
+        <button class="btn btn-ghost" id="banner-dismiss" type="button">Not now</button>
+      </div>
+    </div>
+  </aside>
 
   <!-- ── Hero ────────────────────────────────────────────────── -->
   <section class="hero" id="hero">
@@ -150,6 +179,6 @@
        real insurer or comparison service. All prices and products are illustrative.</p>
   </footer>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

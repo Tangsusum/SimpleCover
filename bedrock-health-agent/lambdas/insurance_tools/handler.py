@@ -1,5 +1,5 @@
 """
-Bedrock Agent action-group Lambda for the CTM health-insurance demo.
+Bedrock Agent action-group Lambda for the SimpleCover health-insurance demo.
 
 Implements four MOCK tools:
   - get_quotes

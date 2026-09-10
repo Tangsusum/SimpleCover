@@ -11,6 +11,6 @@ opentelemetry-instrumentation-fastapi>=0.48b0
 opentelemetry-instrumentation-botocore>=0.48b0
 
 # Datadog Agent Observability (LLM traces for Bedrock Agents)
-ddtrace>=3.10.0
+ddtrace>=3.19.0
 python-dotenv>=1.0.0
 certifi>=2024.0.0

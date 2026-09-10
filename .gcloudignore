@@ -1,0 +1,13 @@
+.git
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+.agents
+.claude
+.env
+.DS_Store
+*.md
+frontend/package-lock.json
+agent-transcripts
+.cursor

@@ -5,7 +5,7 @@ Exports traces over OTLP/HTTP to the local Datadog Agent collector
 (localhost:4318 by default — Agent OTLP ingest / DDOT).
 
 Extracts both W3C `traceparent` and Datadog `x-datadog-*` headers so RUM
-sessions (ctm_browser) continue as APM traces (ctm_backend).
+sessions (simple_cover_browser) continue as APM traces (simple_cover_backend).
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from opentelemetry.trace import (
 )
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "ctm_backend")
+SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "simple_cover_backend")
 SERVICE_VERSION = os.environ.get("OTEL_SERVICE_VERSION", "1.0")
 ENV = os.environ.get("DD_ENV") or os.environ.get("OTEL_ENV", "dev")
 OTLP_ENDPOINT = os.environ.get(
@@ -106,10 +106,27 @@ class DatadogPropagator(TextMapPropagator):
         return {self.TRACE_ID, self.PARENT_ID, self.SAMPLING, self.ORIGIN}
 
 
+def _use_local_otel() -> bool:
+    """Local Datadog Agent OTLP (:4318). Cloud Run uses ddtrace + agentless LLM Obs."""
+    if os.environ.get("OTEL_SDK_DISABLED", "").lower() in ("1", "true", "yes"):
+        return False
+    if os.environ.get("K_SERVICE"):
+        return False
+    return True
+
+
 def setup_telemetry(app) -> None:
     """Configure the tracer provider and instrument FastAPI + botocore. Idempotent."""
     global _INITIALIZED
     if _INITIALIZED:
+        return
+    if not _use_local_otel():
+        _INITIALIZED = True
+        print(
+            "[otel] skipped (Cloud Run / OTEL_SDK_DISABLED); "
+            "ddtrace + LLM Obs agentless handle traces",
+            flush=True,
+        )
         return
 
     resource = Resource.create(
@@ -151,4 +168,4 @@ def setup_telemetry(app) -> None:
 
 
 def tracer():
-    return trace.get_tracer("ctm.backend", SERVICE_VERSION)
+    return trace.get_tracer("simple_cover.backend", SERVICE_VERSION)

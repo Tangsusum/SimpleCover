@@ -18,7 +18,7 @@ Run:
     uvicorn server:app --reload --port 8000
 
 Optional offline UI mode (no AWS / no deployed agent needed):
-    CTM_BACKEND_MOCK=1 uvicorn server:app --reload --port 8000
+    SIMPLE_COVER_BACKEND_MOCK=1 uvicorn server:app --reload --port 8000
 """
 import os
 from pathlib import Path
@@ -29,16 +29,60 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+# AI Guard requires these before ddtrace starts (see
+# https://docs.datadoghq.com/security/ai_guard/setup/).
+os.environ.setdefault("DD_AI_GUARD_ENABLED", "true")
+os.environ.setdefault("DD_SERVICE", "simple_cover_backend")
+os.environ.setdefault("DD_ENV", "dev")
+os.environ.setdefault("DD_TRACE_ENABLED", "true")
+if not os.environ.get("DD_APP_KEY") and os.environ.get("DD_APPLICATION_KEY"):
+    os.environ["DD_APP_KEY"] = os.environ["DD_APPLICATION_KEY"]
 import ddtrace.auto  # noqa: E402
 
 import sys
 
+from ddtrace.llmobs import LLMObs
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace
 from pydantic import BaseModel
 
 from telemetry import setup_telemetry, tracer
+
+
+def _patch_ddtrace_bedrock_kb_observation() -> None:
+    """ddtrace treats retrievedReferences as a dict; Bedrock returns a list, which
+    aborts LLM-Obs span translation for the whole InvokeAgent call."""
+    try:
+        from ddtrace.llmobs._integrations import bedrock_agents as ba
+    except ImportError:
+        return
+    orig = ba._observation_span
+
+    def _observation_span(observation, root_span, current_active_span):
+        obs = observation
+        if observation.get("type") == "KNOWLEDGE_BASE":
+            out = observation.get("knowledgeBaseLookupOutput") or {}
+            refs = out.get("retrievedReferences")
+            if isinstance(refs, list):
+                obs = dict(observation)
+                kb_out = dict(out)
+                texts = []
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    text = (ref.get("content") or {}).get("text") or ref.get("text") or ""
+                    if text:
+                        texts.append(text)
+                kb_out["retrievedReferences"] = {"text": "\n\n".join(texts)}
+                obs["knowledgeBaseLookupOutput"] = kb_out
+        return orig(obs, root_span, current_active_span)
+
+    ba._observation_span = _observation_span
+
+
+_patch_ddtrace_bedrock_kb_observation()
 
 # Make the agent prototype importable (agent_client.py lives next door).
 AGENT_DIR = os.path.abspath(
@@ -47,7 +91,7 @@ AGENT_DIR = os.path.abspath(
 if AGENT_DIR not in sys.path:
     sys.path.insert(0, AGENT_DIR)
 
-MOCK = os.environ.get("CTM_BACKEND_MOCK", "").lower() in ("1", "true", "yes")
+MOCK = os.environ.get("SIMPLE_COVER_BACKEND_MOCK", "").lower() in ("1", "true", "yes")
 
 # Importing agent_client is safe without AWS (all AWS clients are lazy); it only
 # touches AWS when invoke_agent() is actually called.
@@ -92,52 +136,64 @@ def health():
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     """The one endpoint. Thin wrapper over invoke_agent()."""
-    with tracer().start_as_current_span("chat.invoke_agent") as span:
-        span.set_attribute("enduser.id", req.customer_id)
-        span.set_attribute("session.id", req.session_id)
-        span.set_attribute("ctm.mock", MOCK)
-        span.set_attribute("ctm.message_length", len(req.message or ""))
-        ctx = span.get_span_context()
-        print(
-            f"[otel] chat trace_id={ctx.trace_id:032x} span_id={ctx.span_id:016x}",
-            flush=True,
+    with LLMObs.workflow(name="chat", session_id=req.session_id):
+        LLMObs.annotate(
+            input_data=req.message,
+            tags={"user_id": req.customer_id, "user_handle": req.customer_id},
         )
+        with tracer().start_as_current_span("chat.invoke_agent") as span:
+            span.set_attribute("enduser.id", req.customer_id)
+            span.set_attribute("session.id", req.session_id)
+            span.set_attribute("simple_cover.mock", MOCK)
+            span.set_attribute("simple_cover.message_length", len(req.message or ""))
+            ctx = span.get_span_context()
+            print(
+                f"[otel] chat trace_id={ctx.trace_id:032x} span_id={ctx.span_id:016x}",
+                flush=True,
+            )
 
-        if MOCK:
-            result = _mock_invoke(req.customer_id, req.session_id, req.message)
-        else:
-            try:
-                result = agent_client.invoke_agent(
-                    req.customer_id, req.session_id, req.message
-                )
-            except Exception as exc:  # noqa: BLE001 - surface errors to the UI
-                span.record_exception(exc)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-                return {
-                    "response": (
-                        "⚠️ The agent call failed. Is the Bedrock Agent deployed "
-                        "(run `python infra/provision.py`) and are your AWS "
-                        f"credentials set?\n\nDetails: {exc}"
-                    ),
-                    "trace": [{"kind": "error", "message": str(exc)}],
-                }
+            if MOCK:
+                result = _mock_invoke(req.customer_id, req.session_id, req.message)
+            else:
+                try:
+                    result = agent_client.invoke_agent(
+                        req.customer_id, req.session_id, req.message
+                    )
+                except Exception as exc:  # noqa: BLE001 - surface errors to the UI
+                    span.record_exception(exc)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                    LLMObs.annotate(output_data=str(exc))
+                    return {
+                        "response": (
+                            "⚠️ The agent call failed. Is the Bedrock Agent deployed "
+                            "(run `python infra/provision.py`) and are your AWS "
+                            f"credentials set?\n\nDetails: {exc}"
+                        ),
+                        "trace": [{"kind": "error", "message": str(exc)}],
+                    }
 
-        events = result.get("trace") or []
-        tools = [
-            e.get("tool")
-            for e in events
-            if e.get("kind") == "tool_call" and e.get("phase") == "input" and e.get("tool")
-        ]
-        if tools:
-            span.set_attribute("ctm.tools", ",".join(tools))
-        kb_hits = sum(
-            1 for e in events if e.get("kind") == "kb_lookup" and e.get("phase") == "output"
-        )
-        if kb_hits:
-            span.set_attribute("ctm.kb_lookups", kb_hits)
+            events = result.get("trace") or []
+            tools = [
+                e.get("tool")
+                for e in events
+                if e.get("kind") == "tool_call" and e.get("phase") == "input" and e.get("tool")
+            ]
+            if tools:
+                span.set_attribute("simple_cover.tools", ",".join(tools))
+            kb_hits = sum(
+                1 for e in events if e.get("kind") == "kb_lookup" and e.get("phase") == "output"
+            )
+            if kb_hits:
+                span.set_attribute("simple_cover.kb_lookups", kb_hits)
 
-        # Keep the response shape stable: only response + trace matter to the client.
-        return {"response": result.get("response", ""), "trace": events}
+            reply = result.get("response", "")
+            LLMObs.annotate(output_data=reply)
+            return {"response": reply, "trace": events}
+
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 
 # ---------------------------------------------------------------------------

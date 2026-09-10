@@ -1,8 +1,13 @@
 // SimpleCover demo frontend — single page, no build, no framework.
 // Talks only to the thin local backend at /api/chat.
+import { DatadogProvider } from "@datadog/openfeature-browser";
+import { OpenFeature } from "@openfeature/web-sdk";
 
+const _local =
+  location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const API_BASE =
-  new URLSearchParams(location.search).get("api") || "http://localhost:8000";
+  new URLSearchParams(location.search).get("api") ||
+  (_local ? "http://localhost:8000" : "");
 
 function rumOnReady(fn) {
   if (window.DD_RUM && typeof window.DD_RUM.onReady === "function") {
@@ -40,6 +45,9 @@ const els = {
   docSend: $("doc-send"),
   docCancel: $("doc-cancel"),
   cta: $("cta-chat"),
+  banner: $("assistant-banner"),
+  bannerChat: $("banner-chat"),
+  bannerDismiss: $("banner-dismiss"),
 };
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -52,6 +60,7 @@ els.customerId.addEventListener("change", () => {
   customerId = els.customerId.value.trim() || customerId;
   els.customerId.value = customerId;
   rumIdentify();
+  syncFeatureFlagContext();
 });
 
 els.newSession.addEventListener("click", () => {
@@ -71,6 +80,19 @@ els.cta.addEventListener("click", () => {
   $("chat").scrollIntoView({ behavior: "smooth" });
   els.input.focus();
 });
+
+if (els.bannerChat) {
+  els.bannerChat.addEventListener("click", () => {
+    $("chat").scrollIntoView({ behavior: "smooth" });
+    els.input.focus();
+  });
+}
+if (els.bannerDismiss) {
+  els.bannerDismiss.addEventListener("click", () => {
+    sessionStorage.setItem("sc-banner-dismissed", "1");
+    if (els.banner) els.banner.hidden = true;
+  });
+}
 
 // Composer: Enter sends, Shift+Enter = newline; textarea auto-grows.
 els.input.addEventListener("input", autoGrow);
@@ -106,6 +128,48 @@ addAgent(
     "matters to you. You can also paste a policy document for me to review.",
   []
 );
+
+initFeatureFlags();
+
+// ── Datadog feature flags ─────────────────────────────────────────
+// https://docs.datadoghq.com/feature_flags/client/javascript/?tab=npm
+async function initFeatureFlags() {
+  const provider = new DatadogProvider({
+    applicationId: "982ab0ef-608a-405d-89be-3d3033d68e3f",
+    clientToken: "pub6f8a1340522470ddd064a690663e1996",
+    site: "datadoghq.com",
+    env: "dev",
+  });
+  try {
+    await OpenFeature.setProviderAndWait(provider, flagContext());
+    applyAssistantBanner();
+  } catch (err) {
+    console.warn("Datadog feature flags unavailable; banner stays off.", err);
+  }
+}
+
+function flagContext() {
+  return {
+    targetingKey: customerId,
+    user_id: customerId,
+  };
+}
+
+async function syncFeatureFlagContext() {
+  try {
+    await OpenFeature.setContext(flagContext());
+    applyAssistantBanner();
+  } catch (err) {
+    console.warn("Could not refresh feature-flag context.", err);
+  }
+}
+
+function applyAssistantBanner() {
+  const value = OpenFeature.getClient().getBooleanValue("simplecover-assistant-banner", false);
+  if (!els.banner) return;
+  const dismissed = sessionStorage.getItem("sc-banner-dismissed") === "1";
+  els.banner.hidden = !(value && !dismissed);
+}
 
 // ── Core send ─────────────────────────────────────────────────────
 async function sendMessage(overrideText, opts = {}) {
@@ -256,15 +320,17 @@ function traceItem(e) {
     } else {
       const chunks = e.chunks || [];
       box.appendChild(inline(` ${chunks.length} chunk(s) retrieved`));
-      chunks.slice(0, 3).forEach((c) =>
-        box.appendChild(pre((c.text || "").slice(0, 240)))
-      );
+      chunks.slice(0, 3).forEach((c) => {
+        const doc = c.document || "?";
+        const score = c.score == null ? "?" : c.score;
+        box.appendChild(pre(`[${doc}] score=${score}\n${(c.text || "").slice(0, 240)}`));
+      });
     }
   } else if (e.kind === "guardrail") {
     badge.className += e.blocked ? "k-guard blocked" : "k-guard";
     badge.textContent = e.blocked ? "guardrail: BLOCKED" : "guardrail: passed";
     box.appendChild(badge);
-    box.appendChild(inline(` action=${e.action || "?"}`));
+    box.appendChild(inline(` action=${e.action || "?"}${e.reason ? " — " + e.reason : ""}`));
   } else if (e.kind === "rationale") {
     badge.className += "k-rationale";
     badge.textContent = "rationale";
